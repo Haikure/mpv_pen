@@ -1,0 +1,24 @@
+#!/bin/sh
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+export FONTCONFIG_PATH=/etc/fonts
+export FONTCONFIG_FILE=/etc/fonts/fonts.conf
+export ALSA_CONFIG_PATH="/usr/share/alsa/alsa.conf"
+
+# 创建锁文件目录
+LOCK_DIR="/tmp/audio_wakelocks"
+mkdir -p "$LOCK_DIR"
+
+# 将当前 shell 的 PID 写入锁文件
+echo "$$" > "$LOCK_DIR/VideoPlayer.lock"
+
+# 启动 mpv（前台运行）
+"$SCRIPT_DIR/bin/mpv" \
+  --config-dir="$SCRIPT_DIR/config" \
+  "$@"
+
+echo "mpv 已退出"
+
+exit 0
