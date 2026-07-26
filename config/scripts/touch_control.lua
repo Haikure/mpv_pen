@@ -18,6 +18,16 @@ local BTN_RADIUS = 4
 local BTN_GAP = 10
 local LEFT_BTN_X = 16
 
+-- 发布按钮几何（真实像素），modernx 的 touch_extra_buttons 读取同一份，
+-- 保证 OSC 上的 ↺/+ 与缩放模式下本脚本画的按钮位置一致，改这里一处即可。
+mp.set_property_native("user-data/touch_control/btn-geometry", {
+    size   = BTN_SIZE,
+    x      = LEFT_BTN_X,
+    top    = BTN_TOP,
+    gap    = BTN_GAP,
+    radius = BTN_RADIUS,
+})
+
 -- ========== 按钮状态 ==========
 local controls_overlay = mp.create_osd_overlay("ass-events")
 local modernx_visible = false
@@ -107,7 +117,8 @@ local function zoom_out_button_rect()
 end
 
 local function close_visible()
-    return modernx_visible and not zoom_mode
+    -- 缩放模式下 OSC 被禁用，若不显示 × 就没有退出播放器的入口
+    return modernx_visible or zoom_mode
 end
 
 local function left_buttons_visible()
@@ -239,9 +250,25 @@ local function update_mouse_areas()
     end
 end
 
-local function draw_controls()
+local draw_controls
+
+local resync_timer = nil
+local function schedule_resync()
+    if resync_timer then return end
+    resync_timer = mp.add_timeout(0.2, function()
+        resync_timer = nil
+        draw_controls()
+    end)
+end
+
+draw_controls = function()
     local w, h = mp.get_osd_size()
-    if not w or w <= 0 or not h or h <= 0 then return end
+    if not w or w <= 0 or not h or h <= 0 then
+        -- OSD 尺寸暂时无效（启动、VO 重配置瞬间）。此时收到的 shield/可见性
+        -- 变化不能丢弃，否则手势层可能残留在输入栈顶吞掉 OSC 的点击。
+        schedule_resync()
+        return
+    end
 
     local ass = ""
 
@@ -355,10 +382,13 @@ local function process_touch_move()
         if zoom_pan_down then
             local w, h = mp.get_osd_size()
             if w and h and w > 0 and h > 0 then
+                -- video-pan 的单位是缩放后视频尺寸的比例，video-zoom 是 log2 倍率，
+                -- 必须除以 2^zoom，否则放大越多画面跟手位移偏差越大。
+                local scale = 2 ^ (mp.get_property_number("video-zoom", zoom_level) or zoom_level)
                 local dx = current_pos.x - pan_start_pos.x
                 local dy = current_pos.y - pan_start_pos.y
-                mp.set_property_number("video-pan-x", pan_start_x + dx / w)
-                mp.set_property_number("video-pan-y", pan_start_y + dy / h)
+                mp.set_property_number("video-pan-x", pan_start_x + dx / (w * scale))
+                mp.set_property_number("video-pan-y", pan_start_y + dy / (h * scale))
             end
         end
         return
@@ -449,6 +479,14 @@ local function process_touch_down()
         pan_start_pos = { x = current_pos.x, y = current_pos.y }
         pan_start_x = mp.get_property_number("video-pan-x", 0) or 0
         pan_start_y = mp.get_property_number("video-pan-y", 0) or 0
+        return
+    end
+
+    -- 防御：OSC 可见时手势层本应已被禁用。若因启动竞态（尺寸无效时错过一次
+    -- 区域更新）仍收到按下事件，忽略它并立即重新同步鼠标区域，
+    -- 把点击让给 ModernX，避免整个会话 OSC 都点不动。
+    if osd_shield_active() then
+        draw_controls()
         return
     end
 

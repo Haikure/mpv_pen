@@ -2519,13 +2519,15 @@ function touch_extra_buttons()
     local sx, sy = get_virt_scale_factor()
     if sx <= 0 or sy <= 0 then return end
 
-    local size = 21 * sx
-    local margin = 10 * sx
-    local top = 25 * sy
-    local gap = 10 * sy
-    local radius = 4 * sx
+    -- 几何以 touch_control.lua 发布的为准（真实像素，乘 sx/sy 转虚拟坐标），
+    -- 避免两个脚本各持一份常量导致按钮位置不同步；回退值与其当前常量一致。
+    local geo = mp.get_property_native("user-data/touch_control/btn-geometry") or {}
+    local size = (geo.size or 21) * sx
+    local top = (geo.top or 25) * sy
+    local gap = (geo.gap or 10) * sy
+    local radius = (geo.radius or 4) * sx
 
-    local x1 = margin
+    local x1 = (geo.x or 16) * sx
     local reset_y1 = top
     local zoom_y1 = top + size + gap
     local x2 = x1 + size
@@ -2557,7 +2559,7 @@ function touch_extra_buttons()
     end
     lo = add_layout('touch_reset')
     lo.geometry = { x = x1 + size / 2, y = reset_y1 + size / 2, an = 5, w = size, h = size }
-    lo.style = "{\\blur0\\bord1\\shad0\\1c&HFFFFFF&\\3c&H000000&\\fs" .. math.floor(16 * sy) .. "\\fnmpv-osd-symbols}"
+    lo.style = "{\\blur0\\bord0\\shad0\\1c&HFFFFFF&\\fs" .. math.floor(16 * sy) .. "\\fnmpv-osd-symbols}"
     lo.layer = 50
     lo.button.hoverstyle = "{\\1c&HCCCCCC&}"
 
@@ -2568,7 +2570,7 @@ function touch_extra_buttons()
     end
     lo = add_layout('touch_zoom')
     lo.geometry = { x = x1 + size / 2, y = zoom_y1 + size / 2, an = 5, w = size, h = size }
-    lo.style = "{\\blur0\\bord1\\shad0\\1c&HFFFFFF&\\3c&H000000&\\fs" .. math.floor(16 * sy) .. "\\fnmpv-osd-symbols}"
+    lo.style = "{\\blur0\\bord0\\shad0\\1c&HFFFFFF&\\fs" .. math.floor(16 * sy) .. "\\fnmpv-osd-symbols}"
     lo.layer = 50
     lo.button.hoverstyle = "{\\1c&HCCCCCC&}"
 end
@@ -3143,18 +3145,25 @@ layouts["reduced"] = function()
     end
 
     -- Audio/Subtitle
+    -- 触摸命中区放大：button 类型的渲染只用 x/y/an 和样式里的 \fs，w/h 仅参与
+    -- hitbox 计算，所以撑大 w/h 不会改变图标的位置和大小。三个按钮中心间距 45，
+    -- 取满 45 宽即首尾相接、互不重叠；高度上界让给 tc_left（底边 refY-64），
+    -- 下界让给 persistentseekbar（顶边 refY-8.5），故 46 高对应 refY-63..refY-17。
+    local ctrl_hit_w = 45
+    local ctrl_hit_h = 46
+
     lo = add_layout('cy_audio')
-    lo.geometry = { x = 37, y = refY - 40, an = 5, w = 24, h = 24 }
+    lo.geometry = { x = 37, y = refY - 40, an = 5, w = ctrl_hit_w, h = ctrl_hit_h }
     lo.style = osc_styles.control_3
     lo.visible = (osc_param.playresx >= 500 - outeroffset)
 
     lo = add_layout('cy_sub')
-    lo.geometry = { x = 82, y = refY - 40, an = 5, w = 40, h = 36 }
+    lo.geometry = { x = 82, y = refY - 40, an = 5, w = ctrl_hit_w, h = ctrl_hit_h }
     lo.style = osc_styles.control_3
     lo.visible = (osc_param.playresx >= 600 - outeroffset)
 
     lo = add_layout('vol_ctrl')
-    lo.geometry = { x = 127, y = refY - 40, an = 5, w = 24, h = 24 }
+    lo.geometry = { x = 127, y = refY - 40, an = 5, w = ctrl_hit_w, h = ctrl_hit_h }
     lo.style = osc_styles.control_3
     lo.visible = (osc_param.playresx >= 700 - outeroffset)
 
@@ -4318,15 +4327,14 @@ local function render()
     for _, cords in ipairs(osc_param.areas['input']) do
         if state.osc_visible then                                                                                                                                                                                                                                                         -- activate only when OSC is actually visible
             set_virt_mouse_area(cords.x1, cords.y1, cords.x2, cords.y2, 'input')
+            -- 可见期间每次渲染都重新 enable：mpv 中后启用的输入区段优先，
+            -- 这样 input 始终压在其他脚本的全屏区域（触摸手势层）之上，
+            -- 即使对方因竞态未及时禁用，OSC 也保持可点击。
+            mp.enable_key_bindings('input')
+        elseif state.input_enabled then
+            mp.disable_key_bindings('input')
         end
-        if state.osc_visible ~= state.input_enabled then
-            if state.osc_visible then
-                mp.enable_key_bindings('input')
-            else
-                mp.disable_key_bindings('input')
-            end
-            state.input_enabled = state.osc_visible
-        end
+        state.input_enabled = state.osc_visible
 
         if (mouse_hit_coords(cords.x1, cords.y1, cords.x2, cords.y2) and user_opts.osc_keep_with_cursor) then
             mouse_over_osc = true
@@ -4426,6 +4434,7 @@ function process_event(source, what)
 
     if what == 'down' or what == 'press' then
         reset_timeout()                                                                                                                                                                                                                                                         -- clicking resets the hideosc timer
+        state.mouse_in_window = true                                                                                                                                                                                                                                            -- 触摸设备上 down 可能先于 mouse_move 到达，避免 get_virt_mouse_pos 返回 (-1,-1) 使命中判定失效
 
         for n = 1, #elements do
             if mouse_hit(elements[n]) and
@@ -4715,6 +4724,10 @@ mp.observe_property('osd-dimensions', 'native', function(name, val)
     -- (we could use the value instead of re-querying it all the time, but then
     --  we might have to worry about property update ordering)
     request_init_resize()
+end)
+mp.observe_property('user-data/touch_control/btn-geometry', 'native', function()
+    -- touch_control 可能晚于本脚本加载，几何属性落地后重建布局以对齐按钮位置
+    request_init()
 end)
 mp.observe_property("display-fps", "number", set_tick_delay)
 -- mouse show/hide bindings
