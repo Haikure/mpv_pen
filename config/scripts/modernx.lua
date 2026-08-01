@@ -4423,6 +4423,68 @@ end
 -- Event handling
 --
 
+-- ========== OSC 可见时的触摸处理 ==========
+-- OSC 可见时 touch_control 的手势层会被护盾禁用，点击/滑动会落在本脚本的
+-- input 区（控制条）与 showhide 区（视频区域）。这里统一处理：
+-- 点按 → 切换播放/暂停；上滑 → 隐藏 OSD；下滑 → 显示 OSD。
+-- 阈值与 touch_control.lua 保持一致（320x170 屏）。
+local OSC_TAP_THRESHOLD = 45
+local OSC_SWIPE_THRESHOLD = 32
+local OSC_TAP_MAX_DURATION = 0.3
+
+local osc_touch_down = nil       -- input 区背景触摸起点（未命中控件）
+local showhide_touch_pos = nil   -- showhide 区触摸起点
+
+local function handle_osc_touch(down, up, duration)
+    if not state.osc_visible then return end
+    if not down then return end
+
+    -- 残留起点（如按下后指针离开窗口）或过慢的拖动不当作点按/滑动
+    if duration > 1.0 then return end
+
+    local dx = up.x - down.x
+    local dy = up.y - down.y
+    local abs_x, abs_y = math.abs(dx), math.abs(dy)
+
+    -- 竖直滑动：上滑隐藏 OSD、下滑显示 OSD
+    if abs_y > OSC_SWIPE_THRESHOLD and abs_y > abs_x then
+        if dy < 0 then
+            hide_osc()
+        else
+            show_osc()
+        end
+        return
+    end
+
+    -- 点按：切换播放/暂停（keep-open 播完停在末帧时从头播放）
+    if abs_x < OSC_TAP_THRESHOLD and abs_y < OSC_TAP_THRESHOLD
+        and duration < OSC_TAP_MAX_DURATION then
+        if mp.get_property_bool("eof-reached", false) then
+            mp.commandv("seek", 0, "absolute-percent")
+            mp.commandv("set", "pause", "no")
+            mp.osd_message(" ▶", 0.8)
+        else
+            local paused = mp.get_property_bool("pause", false)
+            mp.commandv("cycle", "pause")
+            mp.osd_message(paused and " ▶" or " ▍▍", 0.8)
+        end
+    end
+end
+
+local function showhide_mbtn_down()
+    if not state.osc_visible then return end
+    local x, y = mp.get_mouse_pos()
+    showhide_touch_pos = { x = x, y = y, t = mp.get_time() }
+end
+
+local function showhide_mbtn_up()
+    if not showhide_touch_pos then return end
+    local x, y = mp.get_mouse_pos()
+    local down = showhide_touch_pos
+    showhide_touch_pos = nil
+    handle_osc_touch(down, { x = x, y = y }, mp.get_time() - down.t)
+end
+
 local function element_has_action(element, action)
     return element and element.eventresponder and
         element.eventresponder[action]
@@ -4436,6 +4498,7 @@ function process_event(source, what)
         reset_timeout()                                                                                                                                                                                                                                                         -- clicking resets the hideosc timer
         state.mouse_in_window = true                                                                                                                                                                                                                                            -- 触摸设备上 down 可能先于 mouse_move 到达，避免 get_virt_mouse_pos 返回 (-1,-1) 使命中判定失效
 
+        local hit_element = false
         for n = 1, #elements do
             if mouse_hit(elements[n]) and
                 elements[n].eventresponder and
@@ -4445,11 +4508,17 @@ function process_event(source, what)
                     state.active_element = n
                     state.active_event_source = source
                 end
+                hit_element = true
                 -- fire the down or press event if the element has one
                 if element_has_action(elements[n], action) then
                     elements[n].eventresponder[action](elements[n])
                 end
             end
+        end
+        -- 未命中任何控件：记录背景触摸起点，供抬手时判定点按/竖直滑动
+        if what == 'down' and source == 'mbtn_left' and not hit_element then
+            local x, y = mp.get_mouse_pos()
+            osc_touch_down = { x = x, y = y, t = mp.get_time() }
         end
     elseif what == 'up' then
         if elements[state.active_element] then
@@ -4466,6 +4535,12 @@ function process_event(source, what)
             if element_has_action(elements[n], 'reset') then
                 elements[n].eventresponder['reset'](elements[n])
             end
+        elseif source == 'mbtn_left' and osc_touch_down then
+            -- 背景点按/滑动（未命中控件）：切换播放/暂停 或 显示/隐藏 OSD
+            local x, y = mp.get_mouse_pos()
+            local down = osc_touch_down
+            osc_touch_down = nil
+            handle_osc_touch(down, { x = x, y = y }, mp.get_time() - down.t)
         end
         state.active_element = nil
         state.mouse_down_counter = 0
@@ -4734,6 +4809,7 @@ mp.observe_property("display-fps", "number", set_tick_delay)
 mp.set_key_bindings({
     { 'mouse_move',  function(e) process_event('mouse_move', nil) end },
     { 'mouse_leave', mouse_leave },
+    { 'mbtn_left',   showhide_mbtn_up, showhide_mbtn_down },
 }, 'showhide', 'force')
 mp.set_key_bindings({
     { 'mouse_move',  function(e) process_event('mouse_move', nil) end },
@@ -4814,6 +4890,18 @@ mp.register_script_message("touch_zoom_mode", function(v)
         visibility_mode("auto")
         enable_osc(true)
         show_osc()
+    end
+end)
+
+-- 供 touch_control 上滑/下滑手势显示或隐藏 OSD；缩放模式下不生效。
+mp.register_script_message("touch_osd_show", function()
+    if not touch_zoom_active then
+        show_osc()
+    end
+end)
+mp.register_script_message("touch_osd_hide", function()
+    if not touch_zoom_active then
+        hide_osc()
     end
 end)
 

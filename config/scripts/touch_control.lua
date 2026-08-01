@@ -3,6 +3,7 @@ local msg = require 'mp.msg'
 
 -- ========== 手势参数 ==========
 local MOVE_THRESHOLD = 45
+local VERTICAL_SWIPE_THRESHOLD = 32   -- 竖直滑动触发距离（320x170 屏约 19% 屏高）
 local TAP_MAX_DURATION = 0.3
 local LONG_PRESS_THRESHOLD = 0.5
 local SEEK_SENSITIVITY = 0.2
@@ -46,6 +47,7 @@ local pan_start_y = 0
 local last_tap_time = 0
 local touch_down = false
 local is_showing_progress = false
+local vertical_swipe_done = false
 local long_press_active = false
 local keep_osd_display = false
 local moved_enough = false
@@ -194,8 +196,9 @@ local function update_mouse_areas()
 
     if not zoom_mode then
         if osd_shield_active() then
-            -- OSC 的实际缩放区域会随窗口和布局变化。显示时彻底释放手势层，
-            -- 避免它覆盖字幕、进度条等 ModernX 控件的鼠标事件。
+            -- OSC 可见（如暂停时）：彻底释放手势层，把点击让给 ModernX 的
+            -- input 区（控制条控件）与 showhide 区（视频区域点按/滑动，见
+            -- modernx 的 touch 处理），避免手势层吞掉进度条等控件。
             for _, name in ipairs(GESTURE_AREAS) do
                 disable_mouse_area(name)
             end
@@ -406,7 +409,22 @@ local function process_touch_move()
         cancel_long_press()
     end
 
-    if not is_showing_progress and abs_x > MOVE_THRESHOLD and abs_y < (MOVE_THRESHOLD + 50) then
+    -- 竖直滑动：上滑隐藏 OSD、下滑显示 OSD（缩放模式下已提前返回，不生效）。
+    -- 要求竖直分量明显占优（abs_y > abs_x），避免与水平快进/点按混淆。
+    if not vertical_swipe_done and not is_showing_progress
+        and abs_y > VERTICAL_SWIPE_THRESHOLD and abs_y > abs_x then
+        vertical_swipe_done = true
+        moved_enough = true
+        cancel_long_press()
+        if delta_y < 0 then
+            mp.commandv("script-message-to", "modernx", "touch_osd_hide")
+        else
+            mp.commandv("script-message-to", "modernx", "touch_osd_show")
+        end
+    end
+
+    if not is_showing_progress and not vertical_swipe_done
+        and abs_x > MOVE_THRESHOLD and abs_y < (MOVE_THRESHOLD + 50) then
         is_showing_progress = true
     end
 
@@ -492,6 +510,7 @@ local function process_touch_down()
 
     touch_down = true
     is_showing_progress = false
+    vertical_swipe_done = false
     long_press_active = false
     keep_osd_display = false
     moved_enough = false
@@ -572,6 +591,12 @@ local function process_touch_up()
     local delta_y = current_pos.y - start_pos.y
     local duration = now() - start_time
 
+    -- 已判定为竖直滑动（OSD 显示/隐藏），抬手时不再触发快进/点按。
+    if vertical_swipe_done then
+        last_tap_time = 0
+        return
+    end
+
     if math.abs(delta_x) > MOVE_THRESHOLD and math.abs(delta_y) < (MOVE_THRESHOLD + 50) then
         mp.commandv("seek", delta_x * SEEK_SENSITIVITY, "relative")
         last_tap_time = 0
@@ -579,9 +604,16 @@ local function process_touch_up()
     end
 
     if math.abs(delta_x) < MOVE_THRESHOLD and math.abs(delta_y) < MOVE_THRESHOLD and duration < TAP_MAX_DURATION then
-        local paused = mp.get_property_bool("pause", false)
-        mp.commandv("cycle", "pause")
-        mp.osd_message(paused and " ▶" or " ▍▍", 0.8)
+        if mp.get_property_bool("eof-reached", false) then
+            -- keep-open 播放完毕停在末帧时，一次点按直接从头播放
+            mp.commandv("seek", 0, "absolute-percent")
+            mp.commandv("set", "pause", "no")
+            mp.osd_message(" ▶", 0.8)
+        else
+            local paused = mp.get_property_bool("pause", false)
+            mp.commandv("cycle", "pause")
+            mp.osd_message(paused and " ▶" or " ▍▍", 0.8)
+        end
         last_tap_time = now()
         return
     end
@@ -655,6 +687,7 @@ mp.register_event("start-file", function()
     zoom_out_button_down = false
     reset_button_down = false
     is_showing_progress = false
+    vertical_swipe_done = false
     moved_enough = false
     cancel_long_press()
 
