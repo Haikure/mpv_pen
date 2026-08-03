@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# zig cc 的 -Xlinker 白名单不识别 "--version-script=FILE" 这种带 = 的单参数形式
+# （报 "unsupported linker arg"）。把成对的 "-Xlinker --version-script=FILE"
+# 替换为单个 "-Wl,--version-script=FILE"（已验证 zig 可用）。
+argv=("$@")
+out=()
+i=0
+n=$#
+while [ $i -lt $n ]; do
+  a="${argv[$i]}"
+  if [ "$a" = "-Xlinker" ] && [ $((i + 1)) -lt $n ] \
+     && [[ "${argv[$((i + 1))]}" == --version-script=* ]]; then
+    out+=("-Wl,--version-script=${argv[$((i + 1))]#--version-script=}")
+    i=$((i + 2))
+    continue
+  fi
+  out+=("$a")
+  i=$((i + 1))
+done
+exec zig cc -target aarch64-linux-gnu.2.27 "${out[@]}"
