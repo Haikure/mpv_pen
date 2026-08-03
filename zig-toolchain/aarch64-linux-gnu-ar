@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+args=()
+for a in "$@"; do
+    # Meson 可能传 csrDT，其中 T 表示 thin archive，zig ld 后续可能无法链接
+    if [[ "$a" =~ ^[a-zA-Z]+$ ]]; then
+        a="${a//T/}"
+        [ -z "$a" ] && continue
+    fi
+    args+=("$a")
+done
+
+exec zig ar "${args[@]}"

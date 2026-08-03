@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# strip 转发到 crosstool-ng 工具链（不用 zig objcopy）
+# 注意: 若你的 x-tools 不在 $HOME/build/x-tools，请修改下面这行
+exec "$HOME/build/x-tools/aarch64-unknown-linux-gnu/bin/aarch64-unknown-linux-gnu-strip" "$@"

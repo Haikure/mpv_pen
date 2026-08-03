@@ -1,0 +1,5 @@
+#!/bin/sh
+export PKG_CONFIG_LIBDIR=/opt/ffmpeg/lib/pkgconfig:/opt/ffmpeg/share/pkgconfig
+export PKG_CONFIG_PATH=
+export PKG_CONFIG_SYSROOT_DIR=
+exec /usr/bin/pkg-config "$@"
